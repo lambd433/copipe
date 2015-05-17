@@ -1,0 +1,162 @@
+//#include <X11/Xlib.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <iostream>
+#include <string>
+#include <memory>
+#include <sys/wait.h>
+#include <boost/asio.hpp>
+#include <boost/exception/diagnostic_information.hpp> 
+#include <boost/exception_ptr.hpp> 
+
+namespace asio = boost::asio; 
+namespace ip = asio::ip;
+
+//"$ ls -la | pbcopy";
+void setClip(std::string text){
+  int fd[2]; //file desc
+  int pid;
+  pipe(fd);
+
+  // child
+  if((pid=fork()) == 0){ 
+    close(fd[0]);
+    write(fd[1], text.c_str(), text.size());
+    exit(0);
+    //parent(pbcopy)
+  }else{
+    close(fd[1]);
+    int stat;
+    waitpid(pid, &stat, 0);
+    dup2(fd[0], STDIN_FILENO);
+    execlp("pbcopy", "pbcopy", (char *) NULL);    
+  }
+}
+
+std::string getClip(){
+  int fd[2]; //file desc
+  int pid;
+  pipe(fd);
+  if((pid=fork()) == 0){ // child
+    close(fd[0]);
+    dup2(fd[1], STDOUT_FILENO);
+    execlp("pbpaste", "pbpaste",  (char *) NULL);
+    exit(0);
+  }else{ //parent
+    close(fd[1]);
+    int stat;
+    char buf[1024];
+    waitpid(pid, &stat, 0);
+    read(fd[0], buf, 1024);
+    // std::cout << "buf = " << buf << std::endl;
+    return std::string(buf);
+  }    
+}
+
+//for client 
+int client(const std::string host, const unsigned int port) {
+  try {
+    boost::asio::io_service io;
+    ip::tcp::endpoint endpoint(ip::address::from_string(host), port);
+    ip::tcp::socket socket(io);
+    socket.connect(endpoint);
+    std::string buf;
+    while(1)
+      {
+        std::cout << "> ";
+        std::cin >> buf;
+        asio::write(socket, asio::buffer(buf));
+        if(buf == "end") break;
+        std::cout << "Waiting...\n";
+        asio::streambuf rec_buf;
+        boost::system::error_code err;
+        asio::read(socket, rec_buf, asio::transfer_at_least(1), err);
+        if(err && err !=asio::error::eof)
+          std::cout << "Failed to receive" << err.message() << std::endl;
+        else if(asio::buffer_cast<const char*>(rec_buf.data()) == std::string("end"))
+          {
+            std::cout << "Connection closed\n";
+            break;
+          }
+        std::cout << &rec_buf << std::endl;
+      }
+  }
+  // catch (const boost::system::error_code& e)
+  catch (const boost::exception& e)
+    {
+      std::cerr << "OMG!" << boost::diagnostic_information(e);
+      // std::cout << e.what();
+      return 1;
+    }
+  return 0;
+}
+
+
+//for server
+int server(const std::string host, const unsigned int port) {
+  asio::io_service io;
+  ip::tcp::socket socket(io);
+
+  ip::tcp::endpoint endpoint(ip::tcp::v4(), port);
+  ip::tcp::acceptor acceptor(io, endpoint);
+  acceptor.accept(socket);
+  std::string buf;
+  while(1)
+    {
+      std::cout << "Waiting... \n";
+      asio::streambuf rec_buf;
+      boost::system::error_code err;
+      asio::read(socket, rec_buf, asio::transfer_at_least(1), err);
+      if(err && err != asio::error::eof)
+        std::cout << " Failed to receive: " << err.message() << std::endl;
+      else if (asio::buffer_cast<const char*>(rec_buf.data()) == std::string("end"))
+        {
+          std::cout << "Connection closed\n";
+          break;
+        }
+      std::cout << &rec_buf << std::endl;
+      std::cout << "> ";
+      std::cin >> buf;
+      asio::write(socket, asio::buffer(buf));
+      if (buf == "end") break;
+    }
+  return 0;
+}
+
+int main(int argc, char **argv)
+{
+  int result = 0;
+  bool flag_server = 0;
+  std::string host;
+  unsigned int port;
+  while((result = getopt(argc, argv, "c:p:s")) != -1)
+    {
+      switch(result){
+      case 'c':
+        host = optarg;
+        break;
+      case 's':
+        flag_server = 1;
+        host = "127.0.0.1";
+        break;
+      case 'p':
+        port = std::stoi(optarg);
+        break;
+      case ':':
+        break;
+      case '?':
+        std::cerr << "Usage: " << argv[0] << std::endl;
+        std::exit(1);
+      default:
+        std::cerr << "Usage: " << argv[0] << std::endl;
+        std::exit(1);
+      }
+      
+    }
+  std::cout << "flag_server " << flag_server << " host " << host << " port " << port << std::endl;
+  if(flag_server) server(host, port);
+  // else client(host, port);
+  else setClip(std::string("avc"));
+  return 0;
+}
+
